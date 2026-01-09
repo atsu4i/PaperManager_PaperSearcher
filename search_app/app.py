@@ -7,12 +7,16 @@ ChromaDBに登録された論文をセマンティック検索で検索・表示
 import sys
 from pathlib import Path
 import streamlit as st
+import asyncio
+import json
+from datetime import datetime
 
 # プロジェクトルートをパスに追加
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from app.services.chromadb_service import chromadb_service
+from app.services.notion_service import notion_service
 from app.config import config
 from app.utils.logger import get_logger
 
@@ -905,7 +909,7 @@ def main():
         return
 
     # タブUI
-    tab1, tab2 = st.tabs(["🔍 検索", "📊 セマンティックマップ"])
+    tab1, tab2, tab3 = st.tabs(["🔍 検索", "📊 セマンティックマップ", "📤 エクスポート"])
 
     with tab1:
         # サイドバー設定（モバイルではエクスパンダーに格納）
@@ -1062,6 +1066,126 @@ def main():
     with tab2:
         # セマンティックマップタブ
         render_semantic_map()
+
+    with tab3:
+        # エクスポートタブ
+        st.markdown("### 📤 プロジェクト別論文エクスポート")
+        st.markdown("Notionデータベースから特定のプロジェクトに属する論文をJSON形式でエクスポートします。")
+
+        # プロジェクト一覧を取得
+        if "projects" not in st.session_state:
+            with st.spinner("プロジェクト一覧を読み込み中..."):
+                try:
+                    projects = asyncio.run(notion_service.get_all_projects())
+                    st.session_state.projects = projects
+                except Exception as e:
+                    st.error(f"プロジェクト一覧の取得に失敗しました: {e}")
+                    logger.error(f"Failed to fetch projects: {e}")
+                    st.session_state.projects = []
+
+        projects = st.session_state.projects
+
+        if not projects:
+            st.warning("プロジェクトが見つかりませんでした。Notionデータベースに「プロジェクト」プロパティ（マルチセレクト型）が設定されているか確認してください。")
+            return
+
+        # プロジェクト選択
+        st.markdown("#### 1️⃣ プロジェクトを選択")
+        selected_project = st.selectbox(
+            "プロジェクト",
+            options=projects,
+            help="エクスポートするプロジェクトを選択してください",
+            label_visibility="collapsed"
+        )
+
+        # 論文取得ボタン
+        col1, col2 = st.columns([1, 3])
+        with col1:
+            fetch_button = st.button("📚 論文を取得", type="primary", use_container_width=True)
+        with col2:
+            if "export_papers" in st.session_state and st.session_state.export_papers:
+                if st.button("🔄 プロジェクト一覧を再読込", use_container_width=True):
+                    del st.session_state.projects
+                    del st.session_state.export_papers
+                    st.rerun()
+
+        # 論文データを取得
+        if fetch_button and selected_project:
+            with st.spinner(f"プロジェクト '{selected_project}' の論文を取得中..."):
+                try:
+                    papers = asyncio.run(notion_service.query_papers_by_project(selected_project))
+                    st.session_state.export_papers = papers
+                    st.session_state.selected_project_name = selected_project
+                except Exception as e:
+                    st.error(f"論文データの取得に失敗しました: {e}")
+                    logger.error(f"Failed to fetch papers for project {selected_project}: {e}")
+                    st.session_state.export_papers = []
+
+        # 取得結果の表示
+        if "export_papers" in st.session_state and st.session_state.export_papers:
+            papers = st.session_state.export_papers
+            project_name = st.session_state.selected_project_name
+
+            st.markdown("---")
+            st.markdown(f"#### 2️⃣ 取得結果（{len(papers)}件）")
+
+            # プレビュー表示
+            with st.expander("📋 論文一覧プレビュー", expanded=True):
+                for idx, paper in enumerate(papers[:10], 1):  # 最初の10件のみ
+                    st.markdown(f"**{idx}. {paper['title']}**")
+                    if paper['authors']:
+                        authors_str = ", ".join(paper['authors'][:3])
+                        if len(paper['authors']) > 3:
+                            authors_str += f" ほか{len(paper['authors']) - 3}名"
+                        st.caption(f"👥 {authors_str}")
+                    if paper['journal']:
+                        st.caption(f"📚 {paper['journal']}")
+                    st.markdown("---")
+
+                if len(papers) > 10:
+                    st.info(f"他 {len(papers) - 10} 件...")
+
+            # JSON出力
+            st.markdown("#### 3️⃣ エクスポート")
+
+            # ファイル名生成
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"papers_{project_name}_{timestamp}.json"
+
+            # JSONデータ作成
+            json_data = {
+                "project": project_name,
+                "exported_at": datetime.now().isoformat(),
+                "total_count": len(papers),
+                "papers": papers
+            }
+
+            json_str = json.dumps(json_data, ensure_ascii=False, indent=2)
+
+            # ダウンロードボタン
+            st.download_button(
+                label="📥 JSONファイルをダウンロード",
+                data=json_str,
+                file_name=filename,
+                mime="application/json",
+                type="primary",
+                use_container_width=True
+            )
+
+            # JSON内容のプレビュー
+            with st.expander("📄 JSON内容プレビュー"):
+                # 最初の2件のみ表示（見やすくする）
+                preview_data = {
+                    "project": project_name,
+                    "exported_at": json_data["exported_at"],
+                    "total_count": json_data["total_count"],
+                    "papers": papers[:2]
+                }
+                st.json(preview_data)
+                if len(papers) > 2:
+                    st.info(f"注: プレビューは最初の2件のみ表示しています。完全なデータはダウンロードしたJSONファイルに含まれます。")
+
+            st.success(f"✅ {len(papers)}件の論文をエクスポート準備完了！")
 
     # サイドバーで選択された論文の詳細を表示
     if st.session_state.selected_paper:

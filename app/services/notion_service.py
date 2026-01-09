@@ -764,6 +764,209 @@ class NotionService:
             logger.error(f"データベースクエリエラー [{database_id}]: {e}")
             return None
 
+    async def get_all_projects(self) -> List[str]:
+        """Notionデータベースから全プロジェクト名を取得"""
+        try:
+            projects = set()
+            has_more = True
+            start_cursor = None
+
+            while has_more:
+                response = await self.query_database_pages(
+                    page_size=100,
+                    start_cursor=start_cursor
+                )
+
+                if not response:
+                    break
+
+                for page in response.get("results", []):
+                    # プロジェクトプロパティを取得
+                    project_property = page.get("properties", {}).get("プロジェクト", {})
+                    if project_property.get("type") == "multi_select":
+                        project_items = project_property.get("multi_select", [])
+                        for item in project_items:
+                            project_name = item.get("name")
+                            if project_name:
+                                projects.add(project_name)
+
+                has_more = response.get("has_more", False)
+                start_cursor = response.get("next_cursor")
+
+            project_list = sorted(list(projects))
+            logger.info(f"プロジェクト一覧取得完了: {len(project_list)}件")
+            return project_list
+
+        except Exception as e:
+            logger.error(f"プロジェクト一覧取得エラー: {e}")
+            return []
+
+    async def query_papers_by_project(self, project_name: str) -> List[Dict[str, Any]]:
+        """特定のプロジェクトに属する論文を取得
+
+        Args:
+            project_name: プロジェクト名
+
+        Returns:
+            List[Dict]: 論文データのリスト（タイトル、著者、雑誌、年、DOI、PMID、要約、Notion URL、Obsidianパス）
+        """
+        try:
+            logger.info(f"プロジェクト '{project_name}' の論文を取得中...")
+
+            # マルチセレクトフィルタを作成
+            filter_conditions = {
+                "property": "プロジェクト",
+                "multi_select": {
+                    "contains": project_name
+                }
+            }
+
+            papers = []
+            has_more = True
+            start_cursor = None
+
+            while has_more:
+                response = await self.query_database_pages(
+                    filter_conditions=filter_conditions,
+                    page_size=100,
+                    start_cursor=start_cursor
+                )
+
+                if not response:
+                    break
+
+                for page in response.get("results", []):
+                    paper_data = await self._extract_paper_data(page)
+                    if paper_data:
+                        papers.append(paper_data)
+
+                has_more = response.get("has_more", False)
+                start_cursor = response.get("next_cursor")
+
+            logger.info(f"プロジェクト '{project_name}' の論文取得完了: {len(papers)}件")
+            return papers
+
+        except Exception as e:
+            logger.error(f"プロジェクト論文取得エラー: {e}")
+            return []
+
+    async def _extract_paper_data(self, page: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Notionページから論文データを抽出"""
+        try:
+            properties = page.get("properties", {})
+
+            # タイトル取得
+            title_prop = properties.get("Title", {})
+            title = ""
+            if title_prop.get("type") == "title":
+                title_items = title_prop.get("title", [])
+                if title_items:
+                    title = title_items[0].get("plain_text", "")
+
+            # 著者取得
+            authors = []
+            authors_prop = properties.get("Authors", {})
+            if authors_prop.get("type") == "multi_select":
+                author_items = authors_prop.get("multi_select", [])
+                authors = [item.get("name", "") for item in author_items if item.get("name")]
+
+            # 雑誌取得
+            journal = ""
+            journal_prop = properties.get("Journal", {})
+            if journal_prop.get("type") == "select":
+                journal_item = journal_prop.get("select")
+                if journal_item:
+                    journal = journal_item.get("name", "")
+
+            # 年取得
+            year = ""
+            year_prop = properties.get("Year", {})
+            if year_prop.get("type") == "select":
+                year_item = year_prop.get("select")
+                if year_item:
+                    year = year_item.get("name", "")
+
+            # DOI取得
+            doi = ""
+            doi_prop = properties.get("DOI", {})
+            if doi_prop.get("type") == "url":
+                doi = doi_prop.get("url", "")
+
+            # PMID取得
+            pmid = ""
+            pmid_prop = properties.get("PubMed", {})
+            if pmid_prop.get("type") == "url":
+                pubmed_url = pmid_prop.get("url", "")
+                if pubmed_url and "/pubmed/" in pubmed_url:
+                    pmid = pubmed_url.split("/pubmed/")[-1].strip("/")
+
+            # 引用数取得
+            cited_by_count = 0
+            citations_prop = properties.get("Citations", {})
+            if citations_prop.get("type") == "number":
+                cited_by_count = citations_prop.get("number", 0) or 0
+
+            # Notion URL
+            notion_url = page.get("url", "")
+
+            # ページID
+            page_id = page.get("id", "")
+
+            # 要約取得（ページコンテンツから）
+            summary = await self._get_page_summary(page_id)
+
+            # Obsidianパス（プロパティから取得できる場合）
+            obsidian_path = ""
+            # 注：ObsidianパスがNotionプロパティに保存されていない場合は空文字列
+
+            paper_data = {
+                "title": title,
+                "authors": authors,
+                "journal": journal,
+                "year": year,
+                "doi": doi,
+                "pmid": pmid,
+                "cited_by_count": cited_by_count,
+                "summary": summary,
+                "notion_url": notion_url,
+                "obsidian_path": obsidian_path
+            }
+
+            return paper_data
+
+        except Exception as e:
+            logger.error(f"論文データ抽出エラー: {e}")
+            return None
+
+    async def _get_page_summary(self, page_id: str) -> str:
+        """ページコンテンツから要約を取得"""
+        try:
+            # ページのブロックを取得
+            blocks = await self._async_notion_call(
+                self.client.blocks.children.list,
+                block_id=page_id
+            )
+
+            summary_parts = []
+            for block in blocks.get("results", []):
+                block_type = block.get("type")
+
+                # 段落ブロックからテキストを抽出
+                if block_type == "paragraph":
+                    paragraph = block.get("paragraph", {})
+                    rich_text = paragraph.get("rich_text", [])
+                    for text_item in rich_text:
+                        text_content = text_item.get("plain_text", "")
+                        if text_content:
+                            summary_parts.append(text_content)
+
+            summary = "\n".join(summary_parts)
+            return summary
+
+        except Exception as e:
+            logger.error(f"要約取得エラー: {e}")
+            return ""
+
     async def create_database(self, parent_id: str, title: str, properties: Dict[str, Any]) -> Optional[Dict]:
         """新しいデータベースを作成"""
         try:
