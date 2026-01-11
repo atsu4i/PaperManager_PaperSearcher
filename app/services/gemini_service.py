@@ -476,25 +476,62 @@ class GeminiService:
                         i += 2
                         continue
 
-                # 値の終了を検出（次が、または}の場合のみ）
+                # 値の終了を検出
                 if char == '"':
                     # 次の文字を確認
                     next_pos = i + 1
-                    while next_pos < len(json_str) and json_str[next_pos] in ' \t\n':
+                    while next_pos < len(json_str) and json_str[next_pos] in ' \t\n\r':
                         next_pos += 1
 
-                    # 次が , または } の場合のみ終了と判定
-                    if next_pos < len(json_str) and json_str[next_pos] in ',}':
-                        # フィールド値の終了
+                    # 次が } の場合は確実に終了
+                    if next_pos < len(json_str) and json_str[next_pos] == '}':
                         in_field_value = False
                         result.append(char)
                         i += 1
                         continue
-                    else:
-                        # 値の中のダブルクォート → シングルクォートに置換
-                        result.append("'")
-                        i += 1
-                        continue
+
+                    # 次が , の場合は、更にその先を確認
+                    if next_pos < len(json_str) and json_str[next_pos] == ',':
+                        # カンマの後をチェック
+                        check_pos = next_pos + 1
+                        while check_pos < len(json_str) and json_str[check_pos] in ' \t\n\r':
+                            check_pos += 1
+
+                        # カンマの後が } の場合は終了
+                        if check_pos >= len(json_str) or json_str[check_pos] == '}':
+                            in_field_value = False
+                            result.append(char)
+                            i += 1
+                            continue
+
+                        # カンマの後が " の場合、それが次のフィールド名かチェック
+                        if check_pos < len(json_str) and json_str[check_pos] == '"':
+                            # " の後に : があるか確認（次のフィールドの開始）
+                            temp_pos = check_pos + 1
+                            # フィールド名をスキップ
+                            while temp_pos < len(json_str) and json_str[temp_pos] != '"':
+                                if json_str[temp_pos] == '\\' and temp_pos + 1 < len(json_str):
+                                    temp_pos += 2
+                                else:
+                                    temp_pos += 1
+
+                            if temp_pos < len(json_str):
+                                temp_pos += 1  # 閉じる " をスキップ
+                                # : を探す
+                                while temp_pos < len(json_str) and json_str[temp_pos] in ' \t\n\r':
+                                    temp_pos += 1
+
+                                # : が見つかれば次のフィールド → 現在のフィールド終了
+                                if temp_pos < len(json_str) and json_str[temp_pos] == ':':
+                                    in_field_value = False
+                                    result.append(char)
+                                    i += 1
+                                    continue
+
+                    # それ以外の場合は値の中のダブルクォート → シングルクォートに置換
+                    result.append("'")
+                    i += 1
+                    continue
 
                 # 値の中の特殊文字を処理
                 if char == '\n':
