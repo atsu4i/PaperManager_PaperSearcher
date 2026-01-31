@@ -1099,15 +1099,16 @@ def main():
         )
 
         # 論文取得ボタン
-        col1, col2 = st.columns([1, 3])
+        col1, col2 = st.columns([1, 1])
         with col1:
             fetch_button = st.button("📚 論文を取得", type="primary", use_container_width=True)
         with col2:
-            if "export_papers" in st.session_state and st.session_state.export_papers:
-                if st.button("🔄 プロジェクト一覧を再読込", use_container_width=True):
+            if st.button("🔄 プロジェクト一覧を再読込", use_container_width=True):
+                if "projects" in st.session_state:
                     del st.session_state.projects
+                if "export_papers" in st.session_state:
                     del st.session_state.export_papers
-                    st.rerun()
+                st.rerun()
 
         # 論文データを取得
         if fetch_button and selected_project:
