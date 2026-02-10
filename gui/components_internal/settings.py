@@ -90,7 +90,14 @@ def save_env_file(env_vars: Dict[str, str]) -> bool:
             f.write(f"OBSIDIAN_ORGANIZE_BY_YEAR={env_vars.get('OBSIDIAN_ORGANIZE_BY_YEAR', 'true')}\n")
             f.write(f"OBSIDIAN_INCLUDE_PDF={env_vars.get('OBSIDIAN_INCLUDE_PDF', 'false')}\n")
             f.write(f"OBSIDIAN_TAG_KEYWORDS={env_vars.get('OBSIDIAN_TAG_KEYWORDS', 'true')}\n")
-            f.write(f"OBSIDIAN_LINK_TO_NOTION={env_vars.get('OBSIDIAN_LINK_TO_NOTION', 'true')}\n")
+            f.write(f"OBSIDIAN_LINK_TO_NOTION={env_vars.get('OBSIDIAN_LINK_TO_NOTION', 'true')}\n\n")
+
+            # OCR設定
+            f.write("# OCR設定\n")
+            f.write(f"OCR_ENGINE={env_vars.get('OCR_ENGINE', 'vision_api')}\n")
+            f.write(f"OLLAMA_HOST={env_vars.get('OLLAMA_HOST', 'http://localhost:11434')}\n")
+            f.write(f"OLLAMA_OCR_MODEL={env_vars.get('OLLAMA_OCR_MODEL', 'glm-ocr')}\n")
+            f.write(f"OCR_TIMEOUT={env_vars.get('OCR_TIMEOUT', '300')}\n")
 
         return True
     except Exception as e:
@@ -131,9 +138,9 @@ def test_api_connections() -> Dict[str, bool]:
 def render_settings():
     """設定ページをレンダリング"""
     st.markdown("## ⚙️ システム設定")
-    
+
     # タブで設定を分類
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🔐 API設定", "📁 フォルダ設定", "🔔 通知設定", "📝 Obsidian連携", "🧪 接続テスト", "🗄️ データベース管理"])
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["🔐 API設定", "📁 フォルダ設定", "👁️ OCR設定", "🔔 通知設定", "📝 Obsidian連携", "🧪 接続テスト", "🗄️ データベース管理"])
     
     # 現在の環境変数を読み込み
     env_vars = load_env_file()
@@ -339,6 +346,114 @@ def render_settings():
                 st.error("❌ 設定の保存に失敗しました。")
     
     with tab3:
+        st.markdown("### 👁️ OCR設定")
+        st.info("PDFからテキストを抽出するOCRエンジンを選択できます。")
+
+        # 現在のOCR設定
+        current_ocr_engine = env_vars.get('OCR_ENGINE', 'vision_api')
+
+        # OCRエンジン選択
+        st.markdown("#### OCRエンジン")
+
+        ocr_engine = st.radio(
+            "使用するOCRエンジン",
+            options=["vision_api", "glm_ocr"],
+            index=0 if current_ocr_engine == "vision_api" else 1,
+            format_func=lambda x: {
+                "vision_api": "🌐 Google Vision API（クラウド・高精度）",
+                "glm_ocr": "💻 GLM-OCR（ローカル・無料）"
+            }.get(x, x),
+            help="Vision API: Google Cloudを使用（API費用あり）\nGLM-OCR: Ollamaを使用（ローカル・無料）"
+        )
+
+        # エンジン別の詳細設定
+        if ocr_engine == "vision_api":
+            st.success("✅ Google Vision APIを使用します")
+            st.info(
+                "**必要な設定:**\n"
+                "- `GOOGLE_APPLICATION_CREDENTIALS` が設定済みであること\n"
+                "- Google Cloudの課金が有効であること"
+            )
+
+        elif ocr_engine == "glm_ocr":
+            st.success("✅ GLM-OCR（Ollama）を使用します")
+
+            st.markdown("#### Ollama設定")
+
+            ollama_host = st.text_input(
+                "Ollamaホスト",
+                value=env_vars.get('OLLAMA_HOST', 'http://localhost:11434'),
+                help="Ollamaサーバーのアドレス",
+                placeholder="http://localhost:11434"
+            )
+
+            ollama_model = st.text_input(
+                "OCRモデル",
+                value=env_vars.get('OLLAMA_OCR_MODEL', 'glm-ocr'),
+                help="使用するOCRモデル名",
+                placeholder="glm-ocr"
+            )
+
+            ocr_timeout = st.number_input(
+                "タイムアウト（秒）",
+                value=int(env_vars.get('OCR_TIMEOUT', '300')),
+                min_value=60,
+                max_value=600,
+                step=30,
+                help="1ページあたりの最大処理時間"
+            )
+
+            # Ollama接続テスト
+            if st.button("🔍 Ollama接続テスト"):
+                try:
+                    import requests
+                    response = requests.get(f"{ollama_host}/api/tags", timeout=5)
+                    if response.status_code == 200:
+                        models = response.json().get("models", [])
+                        model_names = [m.get("name", "") for m in models]
+                        st.success(f"✅ Ollama接続成功")
+
+                        if any(ollama_model in name for name in model_names):
+                            st.success(f"✅ モデル `{ollama_model}` が見つかりました")
+                        else:
+                            st.warning(f"⚠️ モデル `{ollama_model}` が見つかりません")
+                            st.code(f"ollama pull {ollama_model}", language="bash")
+
+                        if model_names:
+                            st.info(f"利用可能なモデル: {', '.join(model_names[:5])}")
+                    else:
+                        st.error(f"❌ Ollama接続失敗: {response.status_code}")
+                except requests.exceptions.ConnectionError:
+                    st.error(f"❌ Ollamaに接続できません: {ollama_host}")
+                    st.info("Ollamaが起動しているか確認してください: `ollama serve`")
+                except Exception as e:
+                    st.error(f"❌ 接続テストエラー: {e}")
+
+            st.info(
+                "**GLM-OCRを使用するには:**\n"
+                "1. Ollamaをインストール: https://ollama.com\n"
+                "2. Ollamaを起動: `ollama serve`\n"
+                "3. モデルをダウンロード: `ollama pull glm-ocr`\n"
+                "4. PyMuPDFをインストール: `pip install PyMuPDF Pillow`"
+            )
+
+        # 保存ボタン
+        if st.button("💾 OCR設定を保存", type="primary"):
+            new_env_vars = env_vars.copy()
+            new_env_vars['OCR_ENGINE'] = ocr_engine
+
+            if ocr_engine == "glm_ocr":
+                new_env_vars['OLLAMA_HOST'] = ollama_host
+                new_env_vars['OLLAMA_OCR_MODEL'] = ollama_model
+                new_env_vars['OCR_TIMEOUT'] = str(ocr_timeout)
+
+            if save_env_file(new_env_vars):
+                st.success("✅ OCR設定が保存されました！")
+                st.warning("⚠️ **重要**: 設定を反映するには、アプリを再起動してください。")
+            else:
+                st.error("❌ 設定の保存に失敗しました。")
+
+    with tab4:
         st.markdown("### 🔔 Slack通知設定")
         st.info("Slack通知を有効にすると、論文処理完了時にDMで通知を受け取れます。")
         
@@ -451,7 +566,7 @@ def render_settings():
             else:
                 st.error("❌ 設定の保存に失敗しました。")
     
-    with tab4:
+    with tab5:
         st.markdown("### 📝 Obsidian連携設定")
         st.info("Notionと同様の内容をObsidian VaultにMarkdown形式で自動エクスポートできます。")
         
@@ -550,7 +665,7 @@ def render_settings():
             else:
                 st.error("❌ 設定の保存に失敗しました。")
     
-    with tab5:
+    with tab6:
         st.markdown("### 🧪 API接続テスト")
         st.info("各種APIの接続状態をテストできます。")
         st.warning("⚠️ **重要**: 設定を変更した場合は、各タブの「💾 保存」ボタンで保存してから接続テストを実行してください。")
@@ -640,7 +755,7 @@ def render_settings():
         df = pd.DataFrame(status_data)
         st.dataframe(df, width='stretch', hide_index=True)
 
-    with tab6:
+    with tab7:
         st.markdown("### 🗄️ 処理済みファイルデータベース管理")
         st.info("処理済みファイルのデータベースを管理できます。失敗したファイルを削除すると、再度処理されます。")
 

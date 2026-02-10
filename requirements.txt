@@ -1,5 +1,5 @@
 # PDF Processing
-# PyMuPDF>=1.24.1 --prefer-binary  # Disabled (Vision API only)
+PyMuPDF>=1.24.1  # GLM-OCR使用時に必要（PDF→画像変換）
 Pillow>=10.0.0
 
 # Google Cloud APIs

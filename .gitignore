@@ -76,3 +76,6 @@ sample_*.pdf
 memo.md
 企画書.md
 企画書2.md
+# OCR/LLM比較テスト用ディレクトリ
+ocr_comparison/
+llm_comparison/

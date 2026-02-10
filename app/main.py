@@ -7,6 +7,7 @@ import asyncio
 import signal
 import time
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict
 from concurrent.futures import ThreadPoolExecutor
@@ -355,10 +356,14 @@ class PaperManager:
             # 成功として処理済みマーク
             if self.file_watcher:
                 self.file_watcher.mark_file_processed(file_path, True, notion_page_id)
-            
+
             processing_time = time.time() - start_time
             logger.info(f"[Worker {worker_id}] 処理完了: {file_name} ({processing_time:.1f}秒)")
-            
+
+            # Inbox記録追加
+            if config.inbox.enabled:
+                await self._append_to_inbox(paper_metadata.title, notion_page_id)
+
             # Obsidianエクスポート
             if obsidian_service.enabled:
                 logger.info(f"[Worker {worker_id}] Obsidianエクスポート中: {file_name}")
@@ -490,6 +495,38 @@ class PaperManager:
         except Exception as e:
             logger.error(f"OpenAlexメタデータマージエラー: {e}")
             return gemini_metadata
+
+    async def _append_to_inbox(self, title: str, notion_page_id: str) -> bool:
+        """Inbox.mdに論文登録記録を追記"""
+        try:
+            if not config.inbox.enabled or not config.inbox.file_path:
+                return False
+
+            inbox_path = Path(config.inbox.file_path)
+            if not inbox_path.exists():
+                logger.warning(f"Inboxファイルが存在しません: {inbox_path}")
+                return False
+
+            # NotionのURLを生成
+            notion_url = f"https://www.notion.so/{notion_page_id.replace('-', '')}"
+
+            # 現在の日時を取得
+            now = datetime.now()
+            timestamp = now.strftime("%Y/%m/%d %H:%M")
+
+            # 追記する行を作成（改行 + Markdownリンク形式）
+            entry = f"\n- [ ] {timestamp} 論文登録：[{title}]({notion_url})"
+
+            # ファイルに追記
+            with open(inbox_path, 'a', encoding='utf-8') as f:
+                f.write(entry)
+
+            logger.info(f"Inbox記録追加: {title}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Inbox追記エラー: {e}")
+            return False
 
     async def _periodic_tasks(self):
         """定期実行タスク"""

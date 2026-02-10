@@ -1,36 +1,90 @@
 """
 PDF処理サービス
-Google Cloud Vision APIを使用してPDFからテキストを抽出
+Google Cloud Vision APIまたはGLM-OCR（Ollama）を使用してPDFからテキストを抽出
 """
 
 import asyncio
+import base64
 import logging
 import time
 import re
 from pathlib import Path
 from typing import Optional, Tuple
-# import fitz  # PyMuPDF - オプション機能のため無効化
-from google.cloud import vision
-from google.cloud import storage
-from google.api_core import retry
 import io
 import tempfile
 import os
+
+import requests
 
 from ..config import config
 from ..utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Vision API関連のインポート（vision_api使用時のみ）
+try:
+    from google.cloud import vision
+    from google.cloud import storage
+    from google.api_core import retry
+    VISION_API_AVAILABLE = True
+except ImportError:
+    VISION_API_AVAILABLE = False
+    logger.warning("Google Cloud Vision APIがインストールされていません")
+
+# PyMuPDF（GLM-OCR用のPDF→画像変換に使用）
+try:
+    import fitz  # PyMuPDF
+    from PIL import Image
+    PYMUPDF_AVAILABLE = True
+except ImportError:
+    PYMUPDF_AVAILABLE = False
+    logger.warning("PyMuPDFがインストールされていません（GLM-OCRには必要）")
+
 
 class PDFProcessor:
     """PDF処理クラス"""
-    
+
     def __init__(self):
-        self.vision_client = vision.ImageAnnotatorClient()
-        self.storage_client = storage.Client()
-        self.bucket_name = self._get_or_create_bucket()
-        
+        self.ocr_engine = config.ocr.engine
+        logger.info(f"OCRエンジン: {self.ocr_engine}")
+
+        # Vision API用のクライアント初期化
+        if self.ocr_engine == "vision_api":
+            if not VISION_API_AVAILABLE:
+                raise RuntimeError("Vision APIを使用するにはgoogle-cloud-visionのインストールが必要です")
+            self.vision_client = vision.ImageAnnotatorClient()
+            self.storage_client = storage.Client()
+            self.bucket_name = self._get_or_create_bucket()
+
+        # GLM-OCR用の設定
+        elif self.ocr_engine == "glm_ocr":
+            if not PYMUPDF_AVAILABLE:
+                raise RuntimeError("GLM-OCRを使用するにはPyMuPDFとPillowのインストールが必要です: pip install PyMuPDF Pillow")
+            self.ollama_host = config.ocr.ollama_host
+            self.ollama_model = config.ocr.ollama_model
+            self.ocr_timeout = config.ocr.timeout
+            # Ollamaの接続確認
+            self._check_ollama_connection()
+
+        else:
+            raise ValueError(f"未知のOCRエンジン: {self.ocr_engine}")
+
+    def _check_ollama_connection(self):
+        """Ollamaサーバーへの接続確認"""
+        try:
+            response = requests.get(f"{self.ollama_host}/api/tags", timeout=5)
+            if response.status_code == 200:
+                models = response.json().get("models", [])
+                model_names = [m.get("name", "") for m in models]
+                if not any(self.ollama_model in name for name in model_names):
+                    logger.warning(f"Ollamaに{self.ollama_model}モデルがありません。`ollama pull {self.ollama_model}`を実行してください")
+                else:
+                    logger.info(f"Ollama接続確認OK: {self.ollama_model}")
+            else:
+                logger.warning(f"Ollamaサーバーに接続できません: {response.status_code}")
+        except requests.exceptions.ConnectionError:
+            logger.warning(f"Ollamaサーバーに接続できません: {self.ollama_host}")
+
     def _get_or_create_bucket(self) -> str:
         """GCSバケットを取得または作成"""
         bucket_name = f"paper-manager-temp-{int(time.time())}"
@@ -43,20 +97,26 @@ class PDFProcessor:
         except Exception as e:
             logger.error(f"バケット作成エラー: {e}")
             raise
-    
+
     async def extract_text_from_pdf(self, pdf_path: str) -> str:
         """PDFからテキストを抽出"""
         try:
             logger.info(f"PDF処理開始: {pdf_path}")
-            
+
             # PDFファイルの検証
             if not self._validate_pdf_file(pdf_path):
                 raise ValueError(f"無効なPDFファイル: {pdf_path}")
-            
-            # PyMuPDFは無効化されているため、直接Vision APIを使用
-            logger.info("Vision APIでOCR処理を実行")
-            return await self._extract_text_with_vision_api(pdf_path)
-            
+
+            # OCRエンジンに応じて処理を分岐
+            if self.ocr_engine == "vision_api":
+                logger.info("Vision APIでOCR処理を実行")
+                return await self._extract_text_with_vision_api(pdf_path)
+            elif self.ocr_engine == "glm_ocr":
+                logger.info("GLM-OCR（Ollama）でOCR処理を実行")
+                return await self._extract_text_with_glm_ocr(pdf_path)
+            else:
+                raise ValueError(f"未知のOCRエンジン: {self.ocr_engine}")
+
         except Exception as e:
             logger.error(f"PDF処理エラー: {e}")
             raise
@@ -410,6 +470,101 @@ class PDFProcessor:
                 
         except Exception as e:
             logger.warning(f"一時ファイル削除エラー: {e}")
+
+    # =========================================================================
+    # GLM-OCR（Ollama）処理
+    # =========================================================================
+
+    async def _extract_text_with_glm_ocr(self, pdf_path: str) -> str:
+        """GLM-OCR（Ollama）を使用したOCRテキスト抽出"""
+        try:
+            # PDFを画像に変換
+            images = self._pdf_to_images(pdf_path)
+            logger.info(f"PDFを{len(images)}ページの画像に変換しました")
+
+            # 各ページをOCR処理
+            all_text = []
+            for page_num, img in enumerate(images):
+                logger.info(f"ページ {page_num + 1}/{len(images)} をOCR処理中...")
+                text = await self._ocr_image_with_glm(img, page_num)
+                if text:
+                    all_text.append(text)
+
+            full_text = "\n\n".join(all_text)
+            logger.info(f"GLM-OCR完了: {len(full_text)}文字を抽出")
+            return full_text
+
+        except Exception as e:
+            logger.error(f"GLM-OCR処理エラー: {e}")
+            raise
+
+    def _pdf_to_images(self, pdf_path: str) -> list:
+        """PDFをPIL Imageのリストに変換"""
+        if not PYMUPDF_AVAILABLE:
+            raise RuntimeError("PyMuPDFがインストールされていません")
+
+        images = []
+        doc = fitz.open(pdf_path)
+
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            # 高解像度で変換（300 DPI相当）
+            mat = fitz.Matrix(2.0, 2.0)
+            pix = page.get_pixmap(matrix=mat)
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            images.append(img)
+
+        doc.close()
+        return images
+
+    def _image_to_base64(self, img) -> str:
+        """PIL ImageをBase64エンコード"""
+        buffer = io.BytesIO()
+        img.save(buffer, format="PNG")
+        return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+    async def _ocr_image_with_glm(self, img, page_num: int) -> str:
+        """GLM-OCRで1ページをOCR処理"""
+        try:
+            img_base64 = self._image_to_base64(img)
+
+            payload = {
+                "model": self.ollama_model,
+                "prompt": "Text Recognition:",
+                "images": [img_base64],
+                "stream": False
+            }
+
+            # 同期リクエストを非同期で実行
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: requests.post(
+                    f"{self.ollama_host}/api/generate",
+                    json=payload,
+                    timeout=self.ocr_timeout
+                )
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                text = result.get("response", "")
+                logger.debug(f"ページ {page_num + 1}: {len(text)}文字を抽出")
+                return text
+            else:
+                logger.error(f"GLM-OCRエラー（ページ {page_num + 1}）: {response.status_code} - {response.text}")
+                return ""
+
+        except requests.exceptions.Timeout:
+            logger.error(f"GLM-OCRタイムアウト（ページ {page_num + 1}）: {self.ocr_timeout}秒")
+            return ""
+        except Exception as e:
+            logger.error(f"GLM-OCRエラー（ページ {page_num + 1}）: {e}")
+            return ""
+
+    # =========================================================================
+    # ユーティリティ
+    # =========================================================================
 
     def extract_doi_from_text(self, text: str) -> Optional[str]:
         """PDFテキストからDOIを抽出（正規表現）

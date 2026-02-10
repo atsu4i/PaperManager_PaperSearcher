@@ -33,6 +33,14 @@ class GeminiConfig(BaseModel):
     retry_delay: int = 3  # 基本待機時間を3秒に延長
 
 
+class OCRConfig(BaseModel):
+    """OCRエンジン設定"""
+    engine: str = "vision_api"  # "vision_api" または "glm_ocr"
+    ollama_host: str = "http://localhost:11434"  # Ollamaのホスト
+    ollama_model: str = "glm-ocr"  # Ollamaで使用するモデル
+    timeout: int = 300  # タイムアウト（秒）
+
+
 class VisionConfig(BaseModel):
     language_hints: List[str] = ["ja", "en"]
     enable_text_detection_confidence: bool = True
@@ -95,9 +103,16 @@ class ObsidianConfig(BaseModel):
     create_folders: bool = True
 
 
+class InboxConfig(BaseModel):
+    """Obsidian Inbox記録設定"""
+    enabled: bool = False
+    file_path: str = ""  # Inbox.mdのパス
+
+
 class Config(BaseModel):
     file_processing: FileProcessingConfig = Field(default_factory=FileProcessingConfig)
     gemini: GeminiConfig = Field(default_factory=GeminiConfig)
+    ocr: OCRConfig = Field(default_factory=OCRConfig)
     vision: VisionConfig = Field(default_factory=VisionConfig)
     pubmed: PubMedConfig = Field(default_factory=PubMedConfig)
     notion: NotionConfig = Field(default_factory=NotionConfig)
@@ -105,6 +120,7 @@ class Config(BaseModel):
     summary: SummaryConfig = Field(default_factory=SummaryConfig)
     slack: SlackConfig = Field(default_factory=SlackConfig)
     obsidian: ObsidianConfig = Field(default_factory=ObsidianConfig)
+    inbox: InboxConfig = Field(default_factory=InboxConfig)
     
     # 環境変数から取得する設定
     google_credentials_path: Optional[str] = None
@@ -243,6 +259,20 @@ def load_config() -> Config:
             "include_pdf_attachments": os.getenv("OBSIDIAN_INCLUDE_PDF", "true").lower() == "true",
             "tag_keywords": os.getenv("OBSIDIAN_TAG_KEYWORDS", "true").lower() == "true",
             "link_to_notion": os.getenv("OBSIDIAN_LINK_TO_NOTION", "true").lower() == "true"
+        },
+
+        # Inbox記録設定
+        "inbox": {
+            "enabled": os.getenv("INBOX_ENABLED", "false").lower() == "true",
+            "file_path": os.getenv("INBOX_FILE_PATH", "")
+        },
+
+        # OCR設定
+        "ocr": {
+            "engine": os.getenv("OCR_ENGINE", "vision_api"),  # vision_api or glm_ocr
+            "ollama_host": os.getenv("OLLAMA_HOST", "http://localhost:11434"),
+            "ollama_model": os.getenv("OLLAMA_OCR_MODEL", "glm-ocr"),
+            "timeout": int(os.getenv("OCR_TIMEOUT", "300"))
         }
     }
     
