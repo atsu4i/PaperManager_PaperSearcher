@@ -2,7 +2,7 @@
 
 医学論文のPDFを自動解析してNotionに登録し、高精度なセマンティック検索で必要な論文を瞬時に見つけ出す、2つの統合システムです。
 
-## 📦 2つのシステム
+## 📦 3つのシステム
 
 ### 🤖 Paper Manager（論文登録システム）
 PDFファイルをフォルダに保存するだけで、論文情報を**完全自動で**Notionデータベースに登録します。
@@ -13,6 +13,16 @@ PDFファイルをフォルダに保存するだけで、論文情報を**完全
 - 🔬 PubMed自動検索・リンク生成
 - 📚 Notion自動投稿
 - 📝 Obsidian連携（オプション）
+
+### 🔌 Claude Code MCP サーバー（v1.11.0）
+Claude Code から直接、論文登録・検索・エクスポートを自然言語で操作できます。
+
+**主な機能:**
+- 📄 PDFパスを渡すだけで論文を全自動登録（Webアプリと同等の処理）
+- 🔍 セマンティック検索（Fast / Deep モード）
+- 📤 プロジェクト別論文エクスポート（JSON）
+- 🔗 類似論文の芋づる式探索
+- 📊 データベース統計確認
 
 ### 🔍 Paper Searcher（検索システム）
 蓄積された論文を、医学的文脈を理解した高精度なセマンティック検索で素早く見つけ出します。
@@ -289,6 +299,86 @@ CRISPR遺伝子編集の最新動向
 
 ---
 
+## 🔌 Claude Code MCP サーバー（v1.11.0）
+
+Claude Code から自然言語で論文管理システムを操作できます。どのリポジトリで作業中でも利用可能です。
+
+### セットアップ
+
+#### 1. 依存パッケージのインストール
+
+```bash
+paper_manager_env/bin/pip install "mcp[cli]>=1.2.0"
+# または
+pip install -r requirements_mcp.txt
+```
+
+#### 2. Claude Code への登録
+
+`~/.claude.json` の `mcpServers` に以下を追加します（`claude mcp add` コマンド相当）:
+
+```bash
+python3 -c "
+import json
+path = '/Users/YOUR_NAME/.claude.json'
+with open(path) as f:
+    data = json.load(f)
+if 'mcpServers' not in data:
+    data['mcpServers'] = {}
+data['mcpServers']['paper-manager'] = {
+    'command': '/path/to/PaperManager/paper_manager_env/bin/python',
+    'args': ['/path/to/PaperManager/mcp_server.py'],
+    'cwd': '/path/to/PaperManager'
+}
+with open(path, 'w') as f:
+    json.dump(data, f, indent=2, ensure_ascii=False)
+print('Done')
+"
+```
+
+#### 3. Claude Code を再起動
+
+再起動後、`paper-manager` サーバーが自動的に認識されます。
+
+### 利用可能なツール（7つ）
+
+| ツール | 機能 | 主なパラメータ |
+|---|---|---|
+| `register_paper` | PDF を全パイプラインで登録 | `file_path` |
+| `search_papers` | セマンティック検索 | `query`, `n_results=5`, `mode="fast"\|"deep"` |
+| `get_project_papers` | プロジェクト別論文一覧 | `project_name`, `limit=20` |
+| `list_projects` | プロジェクト一覧取得 | なし |
+| `export_project_papers` | 論文を JSON ファイルに保存 | `project_name`, `output_path=""` |
+| `get_similar_papers` | 類似論文の芋づる式探索 | `notion_page_id`, `n_results=5` |
+| `get_database_stats` | ChromaDB 統計情報 | なし |
+
+### 使用例
+
+Claude Code 上でそのまま自然言語で操作できます:
+
+```
+「/path/to/paper.pdf を論文データベースに登録して」
+→ register_paper が呼ばれ、Notion + ChromaDB に自動登録。
+  処理済みPDFは processed_pdfs/ に自動移動（Webアプリと同じ動作）。
+
+「心不全に関する論文を検索して」
+→ search_papers(query="心不全", mode="fast") が呼ばれる。
+
+「心不全プロジェクトの論文を全部エクスポートして」
+→ export_project_papers("心不全") が呼ばれ、JSON ファイルを生成。
+
+「この論文（Notion ID: abc123）に似た論文を探して」
+→ get_similar_papers("abc123") でベクトル類似検索。
+```
+
+### 注意事項
+
+- `register_paper` の処理時間は 1 論文あたり 30 秒〜5 分
+- 使用するモデルは `config/config.yaml` の設定に従う（GUI 設定と共通）
+- OCR エンジン・モデルの変更は GUI 設定タブまたは `config/config.yaml` から行い、MCP サーバー再起動で反映
+
+---
+
 ## 🔧 上級者向けコマンド
 
 ### CLI使用（Paper Manager）
@@ -408,8 +498,10 @@ PaperManager/
 ├── sync_notion_to_obsidian.py # Notion⇄Obsidian同期
 ├── update_citations.py        # OpenAlex被引用数一括更新
 ├── test_summary_retrieval.py  # 要約取得テスト
+├── mcp_server.py              # Claude Code MCP サーバー（v1.11.0）
 │
 ├── requirements.txt           # Python依存関係
+├── requirements_mcp.txt       # MCP サーバー追加依存関係
 ├── .env.example              # 環境変数テンプレート
 ├── README.md                 # このファイル
 └── CLAUDE.md                 # 開発記録
@@ -498,6 +590,17 @@ tail -f logs/paper_manager.log
 ---
 
 ## 🆕 更新履歴
+
+### v1.11.0 (2026-02-18)
+- ✅ **Claude Code MCP サーバー追加** - `mcp_server.py` 新規追加
+  - `register_paper`: PDF 全パイプライン登録（処理済みファイル自動移動対応）
+  - `search_papers`: セマンティック検索（Fast / Deep モード）
+  - `get_project_papers`: プロジェクト別論文一覧
+  - `list_projects`: Notion プロジェクト一覧取得
+  - `export_project_papers`: プロジェクト別論文 JSON エクスポート
+  - `get_similar_papers`: 類似論文の芋づる式探索
+  - `get_database_stats`: ChromaDB 統計情報
+- ✅ **全プロジェクト横断利用可能** - `~/.claude.json` ユーザースコープ登録
 
 ### v1.10.1 (2026-01-09)
 - ✅ **PubMed検索精度向上** - 妥当性検証システム実装（誤マッチ防止）
