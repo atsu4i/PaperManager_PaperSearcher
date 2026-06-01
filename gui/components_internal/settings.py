@@ -192,10 +192,15 @@ def render_settings():
 
         # モデル選択肢
         model_options = [
+            "gemini-3.5-flash",
+            "gemini-3.1-pro-preview",
+            "gemini-3.1-flash-lite",
+            "gemini-3-flash-preview",
+            "gemma-4-31b-it",
+            "gemma-4-26b-a4b-it",
             "gemini-2.5-pro",
-            "gemini-2.5-flash-preview-09-2025",
-            "gemini-2.5-flash-lite-preview-09-2025",
-            "gemma-3-27b-it"
+            "gemini-2.5-flash",
+            "gemini-2.5-flash-lite"
         ]
 
         col1, col2 = st.columns(2)
@@ -204,8 +209,8 @@ def render_settings():
             metadata_model = st.selectbox(
                 "メタデータ抽出用モデル",
                 options=model_options,
-                index=model_options.index(gemini_config.get('metadata_model', 'gemini-2.5-flash-preview-09-2025'))
-                      if gemini_config.get('metadata_model') in model_options else 1,
+                index=model_options.index(gemini_config.get('metadata_model', 'gemini-3.1-flash-lite'))
+                      if gemini_config.get('metadata_model') in model_options else 2,
                 help="論文のメタデータ（タイトル、著者、DOI等）を抽出するモデル。軽量モデル推奨。"
             )
 
@@ -213,17 +218,17 @@ def render_settings():
             summary_model = st.selectbox(
                 "要約作成用モデル",
                 options=model_options,
-                index=model_options.index(gemini_config.get('summary_model', 'gemini-2.5-pro'))
+                index=model_options.index(gemini_config.get('summary_model', 'gemini-3.5-flash'))
                       if gemini_config.get('summary_model') in model_options else 0,
                 help="日本語要約を作成するモデル。高品質モデル推奨。"
             )
 
         st.info(
             "💡 **推奨設定（コスパ最適）:**\n"
-            "- メタデータ抽出: `gemma-3-27b-it` (無料・十分な品質)\n"
-            "- 要約作成: `gemini-2.5-flash-lite` (低コスト・高品質)\n\n"
-            "**より高品質重視:** 要約を `gemini-2.5-flash-preview` に変更\n"
-            "**コスト最重視:** 要約も `gemma-3-27b-it` に設定（品質は若干低下）"
+            "- メタデータ抽出: `gemini-3.1-flash-lite` (低コスト・高速)\n"
+            "- 要約作成: `gemini-3.5-flash` (安定版・高品質)\n\n"
+            "**より高品質重視:** 要約を `gemini-3.1-pro-preview` に変更\n"
+            "**Gemma 4を利用:** `gemma-4-31b-it` / `gemma-4-26b-a4b-it` も選択できます"
         )
         
         # Notion API設定

@@ -79,3 +79,6 @@ memo.md
 # OCR/LLM比較テスト用ディレクトリ
 ocr_comparison/
 llm_comparison/
+
+# temporary files
+TemporaryFiles/

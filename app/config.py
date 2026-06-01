@@ -19,13 +19,13 @@ class FileProcessingConfig(BaseModel):
 
 class GeminiConfig(BaseModel):
     # 後方互換性のため残す
-    model: Optional[str] = "gemini-2.0-flash-exp"
+    model: Optional[str] = "gemini-3.5-flash"
 
     # メタデータ抽出用モデル
-    metadata_model: str = "gemini-2.5-flash-preview-09-2025"
+    metadata_model: str = "gemini-3.1-flash-lite"
 
     # 要約作成用モデル
-    summary_model: str = "gemini-2.5-pro"
+    summary_model: str = "gemini-3.5-flash"
 
     temperature: float = 0.1
     max_tokens: int = 8192

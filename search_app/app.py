@@ -1285,7 +1285,7 @@ def main():
     st.markdown("""
     <div style="text-align: center; color: #6c757d; padding: 0.5rem 0;">
         <p style="font-size: 0.85rem; margin: 0;">Paper Searcher v1.8</p>
-        <p style="font-size: 0.75rem; margin: 0.25rem 0 0 0;">Gemini Embedding + gemma-3-27b-it + ChromaDB</p>
+        <p style="font-size: 0.75rem; margin: 0.25rem 0 0 0;">Gemini Embedding 001 + Gemini 3.5 Flash + ChromaDB</p>
     </div>
     """, unsafe_allow_html=True)
 

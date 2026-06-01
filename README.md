@@ -29,7 +29,7 @@ Claude Code から直接、論文登録・検索・エクスポートを自然�
 
 **主な機能:**
 - 🎯 Deep Search（HyDE + Reranking）
-  - gemma-3-27b-it による医学的文脈理解
+  - gemini-3.5-flash による医学的文脈理解
   - 質問形式での自然言語検索
   - 3段階の高精度検索（クエリ拡張→広範囲検索→AIフィルタリング）
 - ⚡ Fast Search（高速ベクトル検索）
@@ -138,8 +138,9 @@ Paper Manager起動後、「⚙️ 設定」タブで以下を設定:
 2. APIキーをコピー → GUI設定画面に貼り付け
 
 **モデル選択（コスト最適化）:**
-- メタデータ抽出: `gemma-3-27b-it`（無料・高品質）
-- 要約作成: `gemini-2.5-flash-lite`（低コスト）
+- メタデータ抽出: `gemini-3.1-flash-lite`（低コスト・高速）
+- 要約作成: `gemini-3.5-flash`（安定版・高品質）
+- Gemma 4選択肢: `gemma-4-31b-it`, `gemma-4-26b-a4b-it`
 - 年間100論文で約¥50、**98%のコスト削減**
 
 **Vision APIサービスアカウント:**
@@ -474,7 +475,7 @@ PaperManager/
 │   ├── services/              # 各種サービス
 │   │   ├── pdf_processor.py  # PDF処理
 │   │   ├── gemini_service.py # Gemini AI連携
-│   │   ├── gemma_service.py  # Gemma LLM（HyDE/Rerank）
+│   │   ├── gemma_service.py  # Deep Search LLM（HyDE/Rerank）
 │   │   ├── notion_service.py # Notion連携
 │   │   ├── chromadb_service.py # ChromaDB連携
 │   │   ├── obsidian_service.py # Obsidian連携
@@ -532,10 +533,10 @@ python -c "from app.services.chromadb_service import chromadb_service; print(f'�
 python migrate_to_chromadb.py
 ```
 
-#### モデル「gemma-3-27b-it」が見つからない
+#### モデルが見つからない
 - Gemini API（Google AI Studio）で利用可能なモデルか確認
 - APIキーが正しく設定されているか確認
-- `gemini-2.0-flash-exp` に一時的に変更してテスト
+- `gemini-3.1-flash-lite` または `gemini-3.5-flash` に一時的に変更してテスト
 
 #### 文字化けエラー（Windows）
 ```bash
@@ -629,7 +630,7 @@ tail -f logs/paper_manager.log
 
 ### v1.8.0 (2025-01-29)
 - ✅ **Paper Searcher 新規追加** - セマンティック検索システム
-- ✅ **Deep Search（HyDE + Reranking）** - gemma-3-27b-it による高精度検索
+- ✅ **Deep Search（HyDE + Reranking）** - gemini-3.5-flash による高精度検索
 - ✅ **ChromaDB統合** - Gemini Embedding API（gemini-embedding-001）
 - ✅ **モバイル対応UI** - スマホ・タブレット最適化
 - ✅ **バッチ処理** - 100件/バッチで高速登録

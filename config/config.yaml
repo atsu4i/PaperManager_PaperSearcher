@@ -7,9 +7,9 @@ file_processing:
 gemini:
   max_retries: 3
   max_tokens: 8192
-  metadata_model: gemma-3-27b-it
+  metadata_model: gemma-4-26b-a4b-it
   retry_delay: 2
-  summary_model: gemini-2.5-flash-lite-preview-09-2025
+  summary_model: gemma-4-26b-a4b-it
   temperature: 0.1
 logging:
   backup_count: 5

@@ -127,7 +127,7 @@
   - **Step 1 - HyDE（Query Expansion）**: LLMが架空の論文要約を生成してクエリ拡張
   - **Step 2 - Broad Retrieval**: ベクトル検索でTop 30を取得（高再現率）
   - **Step 3 - Reranking**: LLMが元の質問に基づいて精査・並べ替え（高適合率）
-  - 使用モデル: **gemma-3-27b-it** (Google Cloud API経由)
+  - 使用モデル: **gemini-3.5-flash** (Google Cloud API経由)
   - UIステータス表示: 3段階の処理状況を可視化
 - **Fast Search**: 通常ベクトル検索モード
   - HyDE・Rerankingなしの高速検索
@@ -261,7 +261,7 @@ PaperManager/
 │   ├── services/          # 各種サービス
 │   │   ├── pdf_processor.py      # PDF処理
 │   │   ├── gemini_service.py     # Gemini連携
-│   │   ├── gemma_service.py      # Gemma LLM（HyDE/Rerank）（v1.8.0）
+│   │   ├── gemma_service.py      # Deep Search LLM（HyDE/Rerank）（v1.8.0）
 │   │   ├── pubmed_service.py     # PubMed検索
 │   │   ├── openalex_service.py   # OpenAlex連携
 │   │   ├── notion_service.py     # Notion連携
@@ -497,9 +497,9 @@ created: 2025-01-24T10:30:00
   - Gemini Embedding API（`gemini-embedding-001`）によるベクトル化
   - Paper Searcher独立アプリケーション（ポート8503）
   - Deep Search（HyDE + Reranking）高精度検索
-    - gemma-3-27b-it モデル使用（Google Cloud API経由）
+    - gemini-3.5-flash モデル使用（Google Cloud API経由）
   - Fast Search（通常ベクトル検索）高速検索
-  - Gemma LLMサービス（HyDE/Rerank機能）
+  - Deep Search LLMサービス（HyDE/Rerank機能）
   - バッチ処理による高速一括移行（100件/バッチ）
   - Notionブロック取得による要約全文保存
   - UIステータス表示（3段階処理可視化）

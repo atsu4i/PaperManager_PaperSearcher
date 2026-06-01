@@ -1,8 +1,8 @@
 """
-Gemma LLM Service for Deep Search
+Deep Search LLM Service
 
 HyDE（Query Expansion）とReranking機能を提供します。
-gemma-3-27b-itモデルを使用します。
+デフォルトではGemini 3.5 Flashを使用します。
 """
 
 from typing import List, Dict, Any, Optional
@@ -15,7 +15,7 @@ logger = get_logger(__name__)
 
 
 class GemmaService:
-    """Gemma LLMサービスクラス"""
+    """Deep Search用LLMサービスクラス"""
 
     def __init__(self):
         """初期化"""
@@ -23,7 +23,7 @@ class GemmaService:
         genai.configure(api_key=config.gemini_api_key)
 
         # モデル設定
-        self.model_name = "gemma-3-27b-it"
+        self.model_name = "gemini-3.5-flash"
 
         self.generation_config = {
             "temperature": 0.7,
@@ -32,7 +32,7 @@ class GemmaService:
             "max_output_tokens": 2048,
         }
 
-        logger.info(f"Gemma service initialized with model: {self.model_name}")
+        logger.info(f"Deep Search LLM service initialized with model: {self.model_name}")
 
     def generate_hyde_query(self, user_query: str) -> str:
         """
