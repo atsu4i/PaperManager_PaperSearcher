@@ -17,6 +17,17 @@ logging:
   format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
   level: INFO
   max_bytes: 10485760
+ocr:
+  engine: vision_api
+  fallback_to_vision: true
+  image_quality: 85
+  max_image_long_side: 1800
+  max_retries: 2
+  min_text_length_per_page: 100
+  ollama_host: http://localhost:11434
+  ollama_model: glm-ocr
+  timeout: 300
+  use_text_layer: true
 notion:
   enable_pdf_upload: true
   max_page_size: 100

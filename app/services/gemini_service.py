@@ -10,6 +10,15 @@ from typing import Dict, List, Optional, Tuple
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
+try:
+    from google import genai as google_genai
+    from google.genai import types as google_genai_types
+    GOOGLE_GENAI_AVAILABLE = True
+except ImportError:
+    google_genai = None
+    google_genai_types = None
+    GOOGLE_GENAI_AVAILABLE = False
+
 from ..config import config
 from ..models.paper import PaperMetadata
 from ..utils.logger import get_logger
@@ -25,6 +34,9 @@ class GeminiService:
             raise ValueError("Gemini API キーが設定されていません")
 
         genai.configure(api_key=config.gemini_api_key)
+        self.google_genai_client = None
+        if GOOGLE_GENAI_AVAILABLE:
+            self.google_genai_client = google_genai.Client(api_key=config.gemini_api_key)
 
         # メタデータ抽出用モデル
         self.metadata_model = genai.GenerativeModel(
@@ -63,6 +75,17 @@ class GeminiService:
         logger.info(f"Gemini Service初期化完了")
         logger.info(f"  メタデータ抽出用モデル: {config.gemini.metadata_model}")
         logger.info(f"  要約作成用モデル: {config.gemini.summary_model}")
+        if (
+            self._is_gemma4_model(config.gemini.metadata_model)
+            or self._is_gemma4_model(config.gemini.summary_model)
+        ):
+            if GOOGLE_GENAI_AVAILABLE:
+                logger.info("  Gemma 4: ThinkingConfig(thinking_level='MINIMAL') を有効化")
+            else:
+                logger.warning(
+                    "  Gemma 4が選択されていますが google-genai が未インストールです。"
+                    "thinking抑制には `pip install google-genai` が必要です。"
+                )
     
     async def analyze_paper(self, pdf_text: str, file_name: str) -> PaperMetadata:
         """論文の解析とメタデータ抽出（後方互換性のため残す）"""
@@ -260,15 +283,15 @@ class GeminiService:
             text_to_summarize = pdf_text
         
         prompt = f"""
-あなたは医学論文の専門要約者である。以下の論文を段階的に理解し、高品質な日本語要約を作成せよ。
+あなたは医学論文の専門要約者である。以下の論文を読み、高品質な日本語要約を作成せよ。
 
 【論文テキスト】
 {text_to_summarize}
 
-【タスク：段階的に実行】
-ステップ1: 論文全体を読み、研究の目的・方法・結果・結論を把握する
-ステップ2: 重要な数値データ（対象者数、p値、効果量等）を抽出する
-ステップ3: 以下の厳格な要件に従って日本語要約を作成する
+【内部処理（出力禁止）】
+- 論文全体を読み、研究の目的・方法・結果・結論を把握する
+- 重要な数値データ（対象者数、p値、効果量等）を抽出する
+- ただし、思考過程、手順、箇条書きの作業メモ、入力文の再掲は絶対に出力しない
 
 【厳格な出力要件】
 1. **文字数**: 1800-1900文字（必ず守る）
@@ -298,6 +321,8 @@ class GeminiService:
 - プレフィックス・ヘッダー・説明文は一切不要
 - 要約内容のみを直接出力
 - 段落分けは自然に行う（改行で区切る）
+- 英語の指示文、作業手順、考え方、Markdownの箇条書き、タイトル行を出力しない
+- 出力は日本語の完成した要約本文のみ
 
 【良い出力例の文体】
 ○「本研究では、HSCTを受ける患者21名（介入群11名、対照群10名）を対象に、ペット型ロボットの効果を検証した。」
@@ -320,6 +345,11 @@ class GeminiService:
             
             # 包括的なプレフィックス・サフィックス除去
             summary = self._clean_summary_output(summary)
+
+            if not self._contains_japanese(summary) or self._looks_like_prompt_echo(summary):
+                logger.warning("要約出力が日本語要約ではない、またはプロンプトのエコーを含む可能性があります。短い再生成を試みます。")
+                summary = await self._regenerate_summary_concise(text_to_summarize)
+                summary = self._clean_summary_output(summary)
             
             # 文字数確認とログ
             char_count = len(summary)
@@ -342,6 +372,8 @@ class GeminiService:
         """要約出力から不要なプレフィックス・サフィックスを除去"""
         if not text:
             return text
+
+        text = self._remove_thinking_and_prompt_artifacts(text)
         
         # 一般的なプレフィックスパターンを除去
         prefixes_to_remove = [
@@ -376,6 +408,95 @@ class GeminiService:
         text = re.sub(r'\n{3,}', '\n\n', text)
         
         return text
+
+    def _remove_thinking_and_prompt_artifacts(self, text: str) -> str:
+        """Gemma 4等が出す思考/プロンプトエコーを除去"""
+        if not text:
+            return text
+
+        # 明示的なthinkingタグ/セクション
+        artifact_patterns = [
+            r'<think>.*?</think>',
+            r'<thinking>.*?</thinking>',
+            r'(?is)^\s*(?:thinking|reasoning|analysis)\s*[:：].*?(?=\n\s*(?:本研究|本論文|本稿|本解析|本レビュー)|\Z)',
+        ]
+        for pattern in artifact_patterns:
+            text = re.sub(pattern, '', text, flags=re.DOTALL | re.IGNORECASE)
+
+        # プロンプト末尾や出力指示がエコーされた場合は、その後ろだけを使う
+        markers = [
+            '要約を直接出力せよ：',
+            '要約を直接出力せよ:',
+            '日本語要約:',
+            '日本語要約：',
+        ]
+        for marker in markers:
+            if marker in text:
+                text = text.split(marker)[-1]
+
+        # 英語のロール/作業メモが先頭に混入した場合、日本語要約らしい開始位置から採用
+        starts = [
+            '本研究', '本論文', '本稿', 'この研究', '本解析', '本レビュー',
+            '研究背景', '目的は', '背景として'
+        ]
+        japanese_positions = [text.find(s) for s in starts if text.find(s) >= 0]
+        if japanese_positions:
+            first_pos = min(japanese_positions)
+            leading = text[:first_pos]
+            # 先頭に英語指示や箇条書きが長く入っている場合だけ切る
+            if len(leading) > 80 or re.search(r'(Step\s*\d+|Medical paper|summarizer|Output format|Data requirements)', leading, re.I):
+                text = text[first_pos:]
+
+        return text
+
+    def _contains_japanese(self, text: str) -> bool:
+        """日本語文字が含まれるか"""
+        return bool(text and re.search(r'[\u3040-\u30ff\u3400-\u9fff]', text))
+
+    def _looks_like_prompt_echo(self, text: str) -> bool:
+        """プロンプトや思考過程のエコーらしい出力か判定"""
+        if not text:
+            return True
+
+        suspicious_patterns = [
+            r'Medical paper summarizer',
+            r'Step\s*\d+',
+            r'Output format',
+            r'Data requirements',
+            r'Length:\s*\d+',
+            r'Task:',
+            r'^\s*[\*\-]\s+Step',
+            r'【論文テキスト】',
+            r'【厳格な出力要件】',
+            r'内部処理',
+            r'出力禁止',
+        ]
+        if any(re.search(pattern, text, re.IGNORECASE | re.MULTILINE) for pattern in suspicious_patterns):
+            return True
+
+        # 日本語要約より英語/記号が多すぎる場合
+        japanese_chars = len(re.findall(r'[\u3040-\u30ff\u3400-\u9fff]', text))
+        ascii_letters = len(re.findall(r'[A-Za-z]', text))
+        return ascii_letters > max(300, japanese_chars * 1.2)
+
+    async def _regenerate_summary_concise(self, text_to_summarize: str) -> str:
+        """プロンプトエコー時の再生成用。短く明確な指示で出し直す"""
+        concise_prompt = f"""
+以下の医学論文テキストを日本語で1800字程度に要約せよ。
+
+絶対条件:
+- 出力は日本語の要約本文のみ
+- 思考過程、手順、箇条書き、英語の説明、入力文の再掲を出力しない
+- 常体（である調）
+- 背景、目的、方法、結果、結論、意義、限界を自然な段落で含める
+- n、p値、信頼区間など本文中にある具体的数値を可能な限り含める
+
+論文テキスト:
+{text_to_summarize}
+
+要約本文:
+"""
+        return await self._generate_with_retry(concise_prompt, model=self.summary_model)
     
     def _truncate_at_sentence_boundary(self, text: str, max_length: int) -> str:
         """文の境界で自然にテキストを切り詰める"""
@@ -758,12 +879,22 @@ class GeminiService:
         if model is None:
             model = self.model
 
+        model_name = self._resolve_model_name(model)
+
         for attempt in range(config.gemini.max_retries):
             try:
-                response = model.generate_content(prompt)
+                if self._should_use_google_genai_minimal_thinking(model_name):
+                    text = await asyncio.to_thread(
+                        self._generate_with_google_genai_minimal_thinking,
+                        prompt,
+                        model_name
+                    )
+                else:
+                    response = model.generate_content(prompt)
+                    text = response.text if getattr(response, "text", None) else ""
 
-                if response.text:
-                    return response.text
+                if text:
+                    return text
                 else:
                     raise ValueError("空のレスポンスが返されました")
 
@@ -797,6 +928,47 @@ class GeminiService:
                     raise
 
         raise Exception("Gemini API呼び出しが最大試行回数後も失敗しました")
+
+    def _resolve_model_name(self, model) -> str:
+        """GenerativeModelオブジェクトから設定上のモデル名を解決"""
+        if model is self.summary_model:
+            return config.gemini.summary_model
+        if model is self.metadata_model:
+            return config.gemini.metadata_model
+
+        model_name = getattr(model, "model_name", "") or getattr(model, "_model_name", "")
+        if isinstance(model_name, str):
+            return model_name.replace("models/", "")
+        return ""
+
+    def _is_gemma4_model(self, model_name: str) -> bool:
+        return bool(model_name and model_name.replace("models/", "").startswith("gemma-4-"))
+
+    def _should_use_google_genai_minimal_thinking(self, model_name: str) -> bool:
+        """Gemma 4は新SDKでthinkingをMINIMALにする"""
+        return (
+            self._is_gemma4_model(model_name)
+            and GOOGLE_GENAI_AVAILABLE
+            and self.google_genai_client is not None
+        )
+
+    def _generate_with_google_genai_minimal_thinking(self, prompt: str, model_name: str) -> str:
+        """google-genai SDKでGemma 4のthinkingを最小化して生成"""
+        normalized_model_name = model_name.replace("models/", "")
+        gen_config_kwargs = {
+            "temperature": config.gemini.temperature,
+            "max_output_tokens": config.gemini.max_tokens,
+            "thinking_config": google_genai_types.ThinkingConfig(thinking_level="MINIMAL"),
+        }
+
+        response = self.google_genai_client.models.generate_content(
+            model=normalized_model_name,
+            contents=prompt,
+            config=google_genai_types.GenerateContentConfig(**gen_config_kwargs)
+        )
+
+        text = getattr(response, "text", None)
+        return text.strip() if isinstance(text, str) else ""
 
 
 # シングルトンインスタンス

@@ -98,6 +98,12 @@ def save_env_file(env_vars: Dict[str, str]) -> bool:
             f.write(f"OLLAMA_HOST={env_vars.get('OLLAMA_HOST', 'http://localhost:11434')}\n")
             f.write(f"OLLAMA_OCR_MODEL={env_vars.get('OLLAMA_OCR_MODEL', 'glm-ocr')}\n")
             f.write(f"OCR_TIMEOUT={env_vars.get('OCR_TIMEOUT', '300')}\n")
+            f.write(f"OCR_USE_TEXT_LAYER={env_vars.get('OCR_USE_TEXT_LAYER', 'true')}\n")
+            f.write(f"OCR_MIN_TEXT_LENGTH_PER_PAGE={env_vars.get('OCR_MIN_TEXT_LENGTH_PER_PAGE', '100')}\n")
+            f.write(f"OCR_FALLBACK_TO_VISION={env_vars.get('OCR_FALLBACK_TO_VISION', 'true')}\n")
+            f.write(f"OCR_MAX_IMAGE_LONG_SIDE={env_vars.get('OCR_MAX_IMAGE_LONG_SIDE', '1800')}\n")
+            f.write(f"OCR_IMAGE_QUALITY={env_vars.get('OCR_IMAGE_QUALITY', '85')}\n")
+            f.write(f"OCR_MAX_RETRIES={env_vars.get('OCR_MAX_RETRIES', '2')}\n")
 
         return True
     except Exception as e:
@@ -403,6 +409,59 @@ def render_settings():
                 help="1ページあたりの最大処理時間"
             )
 
+            ocr_use_text_layer = st.checkbox(
+                "PDF埋め込みテキストを優先",
+                value=env_vars.get('OCR_USE_TEXT_LAYER', 'true').lower() == 'true',
+                help="十分なテキストレイヤーがあるページはGLM-OCRをスキップします。デジタルPDFでは安定性と速度が向上します。"
+            )
+
+            ocr_min_text_length_per_page = st.number_input(
+                "テキストレイヤー最小文字数",
+                value=int(env_vars.get('OCR_MIN_TEXT_LENGTH_PER_PAGE', '100')),
+                min_value=0,
+                max_value=1000,
+                step=50,
+                help="この文字数以上のテキストが抽出できたページはGLM-OCRをスキップします。"
+            )
+
+            ocr_fallback_to_vision = st.checkbox(
+                "GLM-OCR失敗時にVision APIへフォールバック",
+                value=env_vars.get('OCR_FALLBACK_TO_VISION', 'true').lower() == 'true',
+                help="GLM-OCRが失敗/空結果になったページだけGoogle Cloud Vision APIで再OCRします。Google Cloud認証が必要です。"
+            )
+
+            col_img1, col_img2, col_img3 = st.columns(3)
+
+            with col_img1:
+                ocr_max_image_long_side = st.number_input(
+                    "画像長辺上限(px)",
+                    value=int(env_vars.get('OCR_MAX_IMAGE_LONG_SIDE', '1800')),
+                    min_value=800,
+                    max_value=3000,
+                    step=100,
+                    help="GLM-OCRへ送る画像の最大長辺。小さいほど安定しやすく、精度は下がる場合があります。"
+                )
+
+            with col_img2:
+                ocr_image_quality = st.number_input(
+                    "JPEG品質",
+                    value=int(env_vars.get('OCR_IMAGE_QUALITY', '85')),
+                    min_value=50,
+                    max_value=95,
+                    step=5,
+                    help="GLM-OCRへ送るJPEG画像の品質。低いほど軽量です。"
+                )
+
+            with col_img3:
+                ocr_max_retries = st.number_input(
+                    "リトライ回数",
+                    value=int(env_vars.get('OCR_MAX_RETRIES', '2')),
+                    min_value=0,
+                    max_value=5,
+                    step=1,
+                    help="ページ単位のGLM-OCR失敗時リトライ回数"
+                )
+
             # Ollama接続テスト
             if st.button("🔍 Ollama接続テスト"):
                 try:
@@ -446,6 +505,12 @@ def render_settings():
                 new_env_vars['OLLAMA_HOST'] = ollama_host
                 new_env_vars['OLLAMA_OCR_MODEL'] = ollama_model
                 new_env_vars['OCR_TIMEOUT'] = str(ocr_timeout)
+                new_env_vars['OCR_USE_TEXT_LAYER'] = str(ocr_use_text_layer).lower()
+                new_env_vars['OCR_MIN_TEXT_LENGTH_PER_PAGE'] = str(ocr_min_text_length_per_page)
+                new_env_vars['OCR_FALLBACK_TO_VISION'] = str(ocr_fallback_to_vision).lower()
+                new_env_vars['OCR_MAX_IMAGE_LONG_SIDE'] = str(ocr_max_image_long_side)
+                new_env_vars['OCR_IMAGE_QUALITY'] = str(ocr_image_quality)
+                new_env_vars['OCR_MAX_RETRIES'] = str(ocr_max_retries)
 
             if save_env_file(new_env_vars):
                 st.success("✅ OCR設定が保存されました！")

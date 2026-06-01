@@ -39,6 +39,12 @@ class OCRConfig(BaseModel):
     ollama_host: str = "http://localhost:11434"  # Ollamaのホスト
     ollama_model: str = "glm-ocr"  # Ollamaで使用するモデル
     timeout: int = 300  # タイムアウト（秒）
+    use_text_layer: bool = True  # PDF埋め込みテキストが十分にあるページはOCRをスキップ
+    min_text_length_per_page: int = 100  # テキストレイヤー利用判定のページ単位しきい値
+    fallback_to_vision: bool = True  # GLM-OCR失敗ページをVision APIへフォールバック
+    max_image_long_side: int = 1800  # GLM-OCRへ送る画像の長辺上限
+    image_quality: int = 85  # GLM-OCRへ送るJPEG画像品質
+    max_retries: int = 2  # GLM-OCRページ単位リトライ回数
 
 
 class VisionConfig(BaseModel):
@@ -272,7 +278,13 @@ def load_config() -> Config:
             "engine": os.getenv("OCR_ENGINE", "vision_api"),  # vision_api or glm_ocr
             "ollama_host": os.getenv("OLLAMA_HOST", "http://localhost:11434"),
             "ollama_model": os.getenv("OLLAMA_OCR_MODEL", "glm-ocr"),
-            "timeout": int(os.getenv("OCR_TIMEOUT", "300"))
+            "timeout": int(os.getenv("OCR_TIMEOUT", "300")),
+            "use_text_layer": os.getenv("OCR_USE_TEXT_LAYER", "true").lower() == "true",
+            "min_text_length_per_page": int(os.getenv("OCR_MIN_TEXT_LENGTH_PER_PAGE", "100")),
+            "fallback_to_vision": os.getenv("OCR_FALLBACK_TO_VISION", "true").lower() == "true",
+            "max_image_long_side": int(os.getenv("OCR_MAX_IMAGE_LONG_SIDE", "1800")),
+            "image_quality": int(os.getenv("OCR_IMAGE_QUALITY", "85")),
+            "max_retries": int(os.getenv("OCR_MAX_RETRIES", "2"))
         }
     }
     

@@ -63,6 +63,15 @@ class PDFProcessor:
             self.ollama_host = config.ocr.ollama_host
             self.ollama_model = config.ocr.ollama_model
             self.ocr_timeout = config.ocr.timeout
+            self.ocr_use_text_layer = config.ocr.use_text_layer
+            self.ocr_min_text_length_per_page = config.ocr.min_text_length_per_page
+            self.ocr_fallback_to_vision = config.ocr.fallback_to_vision
+            self.ocr_max_image_long_side = config.ocr.max_image_long_side
+            self.ocr_image_quality = config.ocr.image_quality
+            self.ocr_max_retries = config.ocr.max_retries
+            self.vision_client = None
+            self.storage_client = None
+            self.bucket_name = None
             # Ollamaの接続確認
             self._check_ollama_connection()
 
@@ -478,17 +487,32 @@ class PDFProcessor:
     async def _extract_text_with_glm_ocr(self, pdf_path: str) -> str:
         """GLM-OCR（Ollama）を使用したOCRテキスト抽出"""
         try:
-            # PDFを画像に変換
-            images = self._pdf_to_images(pdf_path)
-            logger.info(f"PDFを{len(images)}ページの画像に変換しました")
-
-            # 各ページをOCR処理
             all_text = []
-            for page_num, img in enumerate(images):
-                logger.info(f"ページ {page_num + 1}/{len(images)} をOCR処理中...")
-                text = await self._ocr_image_with_glm(img, page_num)
-                if text:
-                    all_text.append(text)
+            with fitz.open(pdf_path) as doc:
+                total_pages = len(doc)
+                logger.info(f"PDFを{total_pages}ページとしてGLM-OCR処理します")
+
+                for page_num in range(total_pages):
+                    page = doc[page_num]
+                    text_layer = self._extract_text_layer_from_page(page, page_num)
+                    if text_layer:
+                        all_text.append(text_layer)
+                        continue
+
+                    logger.info(f"ページ {page_num + 1}/{total_pages} をGLM-OCR処理中...")
+                    img = self._render_pdf_page(doc, page_num)
+                    try:
+                        text = await self._ocr_image_with_glm(img, page_num)
+                        if not text and self.ocr_fallback_to_vision:
+                            logger.warning(
+                                f"ページ {page_num + 1}: GLM-OCRが失敗したためVision APIへフォールバックします"
+                            )
+                            text = await self._ocr_image_with_vision_api(img, page_num)
+                        if text:
+                            all_text.append(text)
+                    finally:
+                        img.close()
+                        del img
 
             full_text = "\n\n".join(all_text)
             logger.info(f"GLM-OCR完了: {len(full_text)}文字を抽出")
@@ -498,69 +522,190 @@ class PDFProcessor:
             logger.error(f"GLM-OCR処理エラー: {e}")
             raise
 
+    def _extract_text_layer_from_page(self, page, page_num: int) -> str:
+        """PDFの埋め込みテキストが十分にある場合はOCRせずに利用"""
+        if not self.ocr_use_text_layer:
+            return ""
+
+        try:
+            text = page.get_text("text").strip()
+            compact_text_len = len(re.sub(r"\s+", "", text))
+
+            if compact_text_len >= self.ocr_min_text_length_per_page:
+                logger.info(
+                    f"ページ {page_num + 1}: テキストレイヤーを使用 "
+                    f"({compact_text_len}文字、GLM-OCRスキップ)"
+                )
+                return text
+
+            logger.debug(
+                f"ページ {page_num + 1}: テキストレイヤー不足 "
+                f"({compact_text_len}文字、GLM-OCRへフォールバック)"
+            )
+            return ""
+
+        except Exception as e:
+            logger.warning(f"ページ {page_num + 1}: テキストレイヤー抽出エラー: {e}")
+            return ""
+
+    def _render_pdf_page(self, doc, page_num: int):
+        """PDFの1ページをOCR向けに画像化し、必要に応じて縮小"""
+        page = doc[page_num]
+        mat = fitz.Matrix(2.0, 2.0)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        del pix
+
+        resized = self._resize_image_for_ocr(img)
+        if resized is not img:
+            img.close()
+
+        logger.debug(
+            f"ページ {page_num + 1}: OCR画像サイズ {resized.width}x{resized.height}"
+        )
+        return resized
+
     def _pdf_to_images(self, pdf_path: str) -> list:
-        """PDFをPIL Imageのリストに変換"""
+        """PDFをPIL Imageのリストに変換（後方互換用）"""
         if not PYMUPDF_AVAILABLE:
             raise RuntimeError("PyMuPDFがインストールされていません")
 
         images = []
-        doc = fitz.open(pdf_path)
+        with fitz.open(pdf_path) as doc:
+            for page_num in range(len(doc)):
+                images.append(self._render_pdf_page(doc, page_num))
 
-        for page_num in range(len(doc)):
-            page = doc[page_num]
-            # 高解像度で変換（300 DPI相当）
-            mat = fitz.Matrix(2.0, 2.0)
-            pix = page.get_pixmap(matrix=mat)
-            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            images.append(img)
-
-        doc.close()
         return images
+
+    def _resize_image_for_ocr(self, img):
+        """GLM-OCRに渡す画像の長辺を制限してメモリ負荷を下げる"""
+        max_side = max(1, self.ocr_max_image_long_side)
+        current_long_side = max(img.width, img.height)
+
+        if current_long_side <= max_side:
+            return img
+
+        scale = max_side / current_long_side
+        new_size = (
+            max(1, int(img.width * scale)),
+            max(1, int(img.height * scale))
+        )
+
+        resampling = getattr(Image, "Resampling", Image).LANCZOS
+        resized = img.resize(new_size, resampling)
+        logger.info(
+            f"OCR画像を縮小: {img.width}x{img.height} -> {resized.width}x{resized.height}"
+        )
+        return resized
 
     def _image_to_base64(self, img) -> str:
         """PIL ImageをBase64エンコード"""
         buffer = io.BytesIO()
-        img.save(buffer, format="PNG")
+        img.save(buffer, format="JPEG", quality=self.ocr_image_quality, optimize=True)
         return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
     async def _ocr_image_with_glm(self, img, page_num: int) -> str:
         """GLM-OCRで1ページをOCR処理"""
-        try:
-            img_base64 = self._image_to_base64(img)
+        img_base64 = self._image_to_base64(img)
 
-            payload = {
-                "model": self.ollama_model,
-                "prompt": "Text Recognition:",
-                "images": [img_base64],
-                "stream": False
+        payload = {
+            "model": self.ollama_model,
+            "prompt": "Text Recognition:",
+            "images": [img_base64],
+            "stream": False,
+            "keep_alive": "0s",
+            "options": {
+                "num_ctx": 4096,
+                "temperature": 0
             }
+        }
 
-            # 同期リクエストを非同期で実行
+        for attempt in range(self.ocr_max_retries + 1):
+            try:
+                if attempt > 0:
+                    wait_time = min(2 ** attempt, 10)
+                    logger.info(
+                        f"GLM-OCRリトライ（ページ {page_num + 1}, "
+                        f"{attempt}/{self.ocr_max_retries}）: {wait_time}秒待機"
+                    )
+                    await asyncio.sleep(wait_time)
+
+                loop = asyncio.get_event_loop()
+                response = await loop.run_in_executor(
+                    None,
+                    lambda: requests.post(
+                        f"{self.ollama_host}/api/generate",
+                        json=payload,
+                        timeout=self.ocr_timeout
+                    )
+                )
+
+                if response.status_code == 200:
+                    result = response.json()
+                    text = result.get("response", "")
+                    logger.debug(f"ページ {page_num + 1}: {len(text)}文字を抽出")
+                    return text
+
+                logger.error(
+                    f"GLM-OCRエラー（ページ {page_num + 1}, 試行 {attempt + 1}）: "
+                    f"{response.status_code} - {response.text[:500]}"
+                )
+
+            except requests.exceptions.Timeout:
+                logger.error(
+                    f"GLM-OCRタイムアウト（ページ {page_num + 1}, 試行 {attempt + 1}）: "
+                    f"{self.ocr_timeout}秒"
+                )
+            except requests.exceptions.RequestException as e:
+                logger.error(f"GLM-OCR通信エラー（ページ {page_num + 1}, 試行 {attempt + 1}）: {e}")
+            except Exception as e:
+                logger.error(f"GLM-OCRエラー（ページ {page_num + 1}, 試行 {attempt + 1}）: {e}")
+
+        logger.error(f"GLM-OCR失敗（ページ {page_num + 1}）: 最大リトライ回数に到達")
+        return ""
+
+    async def _ocr_image_with_vision_api(self, img, page_num: int) -> str:
+        """GLM-OCR失敗時に1ページ画像をVision APIでOCRする"""
+        if not VISION_API_AVAILABLE:
+            logger.error("Vision APIライブラリが利用できないためフォールバックできません")
+            return ""
+
+        try:
+            self._ensure_vision_client()
+
+            buffer = io.BytesIO()
+            img.save(buffer, format="PNG")
+            image = vision.Image(content=buffer.getvalue())
+
+            image_context = vision.ImageContext(language_hints=config.vision.language_hints)
+
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(
                 None,
-                lambda: requests.post(
-                    f"{self.ollama_host}/api/generate",
-                    json=payload,
-                    timeout=self.ocr_timeout
+                lambda: self.vision_client.document_text_detection(
+                    image=image,
+                    image_context=image_context
                 )
             )
 
-            if response.status_code == 200:
-                result = response.json()
-                text = result.get("response", "")
-                logger.debug(f"ページ {page_num + 1}: {len(text)}文字を抽出")
-                return text
-            else:
-                logger.error(f"GLM-OCRエラー（ページ {page_num + 1}）: {response.status_code} - {response.text}")
+            if response.error.message:
+                logger.error(f"Vision APIフォールバックエラー（ページ {page_num + 1}）: {response.error.message}")
                 return ""
 
-        except requests.exceptions.Timeout:
-            logger.error(f"GLM-OCRタイムアウト（ページ {page_num + 1}）: {self.ocr_timeout}秒")
-            return ""
+            text = response.full_text_annotation.text if response.full_text_annotation else ""
+            logger.info(f"Vision APIフォールバック成功（ページ {page_num + 1}）: {len(text)}文字")
+            return text
+
         except Exception as e:
-            logger.error(f"GLM-OCRエラー（ページ {page_num + 1}）: {e}")
+            logger.error(f"Vision APIフォールバック失敗（ページ {page_num + 1}）: {e}")
             return ""
+
+    def _ensure_vision_client(self):
+        """Vision APIクライアントを必要時に初期化"""
+        if self.vision_client is not None:
+            return
+
+        self.vision_client = vision.ImageAnnotatorClient()
 
     # =========================================================================
     # ユーティリティ

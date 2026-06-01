@@ -46,7 +46,8 @@ class ChromaDBService:
 
         # Gemini API の初期化
         genai.configure(api_key=config.gemini_api_key)
-        self.embedding_model = "models/embedding-001"
+        self.embedding_model = "models/gemini-embedding-001"
+        self.embedding_dimensionality = 768
 
         logger.info(f"ChromaDB initialized at {self.db_path}")
         logger.info(f"Collection 'papers' ready (count: {self.collection.count()})")
@@ -65,7 +66,8 @@ class ChromaDBService:
             result = genai.embed_content(
                 model=self.embedding_model,
                 content=text,
-                task_type="retrieval_document"
+                task_type="retrieval_document",
+                output_dimensionality=self.embedding_dimensionality
             )
             return result['embedding']
         except Exception as e:
@@ -86,7 +88,8 @@ class ChromaDBService:
             result = genai.embed_content(
                 model=self.embedding_model,
                 content=query,
-                task_type="retrieval_query"
+                task_type="retrieval_query",
+                output_dimensionality=self.embedding_dimensionality
             )
             return result['embedding']
         except Exception as e:
@@ -165,7 +168,8 @@ class ChromaDBService:
             result = genai.embed_content(
                 model=self.embedding_model,
                 content=texts,
-                task_type="retrieval_document"
+                task_type="retrieval_document",
+                output_dimensionality=self.embedding_dimensionality
             )
             return result['embedding']
         except Exception as e:
