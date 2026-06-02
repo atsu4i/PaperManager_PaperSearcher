@@ -9,7 +9,7 @@ import time
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Optional, Dict, Tuple
 from concurrent.futures import ThreadPoolExecutor
 
 from .config import config
@@ -299,9 +299,20 @@ class PaperManager:
 
                     # PubMed未収録の場合、OpenAlexメタデータで補完
                     if not pubmed_found:
+                        openalex_has_identity_metadata = any(
+                            openalex_metadata.get(field)
+                            for field in ["title", "authors", "journal", "publication_year", "doi"]
+                        )
                         logger.info(f"[Worker {worker_id}] PubMed未収録のため、OpenAlexメタデータで補完します")
                         paper_metadata = await self._merge_metadata_from_openalex(paper_metadata, openalex_metadata)
                         logger.info(f"[Worker {worker_id}] OpenAlexメタデータで更新完了: {file_name}")
+
+                        if openalex_has_identity_metadata:
+                            paper_metadata, pubmed_found = await self._retry_pubmed_after_openalex(
+                                paper_metadata,
+                                file_name,
+                                worker_id
+                            )
                 else:
                     logger.warning(f"[Worker {worker_id}] OpenAlexメタデータ取得に失敗: {file_name}")
             except Exception as openalex_error:
@@ -312,7 +323,8 @@ class PaperManager:
             logger.info(f"[Worker {worker_id}] 重複チェック（確認）: {file_name}")
             existing_page_id = await notion_service.search_existing_paper(
                 paper_metadata.title,
-                paper_metadata.doi
+                paper_metadata.doi,
+                paper_metadata.pmid
             )
 
             if existing_page_id:
@@ -495,6 +507,38 @@ class PaperManager:
         except Exception as e:
             logger.error(f"OpenAlexメタデータマージエラー: {e}")
             return gemini_metadata
+
+    async def _retry_pubmed_after_openalex(
+        self,
+        paper_metadata: PaperMetadata,
+        file_name: str,
+        worker_id: int
+    ) -> Tuple[PaperMetadata, bool]:
+        """OpenAlex補完後のメタデータでPubMed検索を再試行する"""
+        try:
+            logger.info(f"[Worker {worker_id}] OpenAlex補完後のPubMed再検索中: {file_name}")
+            pmid = await pubmed_service.search_pmid(paper_metadata)
+
+            if not pmid:
+                logger.info(f"[Worker {worker_id}] OpenAlex補完後もPubMed PMIDは見つかりませんでした: {file_name}")
+                return paper_metadata, False
+
+            paper_metadata.pmid = pmid
+            paper_metadata.pubmed_url = pubmed_service.create_pubmed_url(pmid)
+            logger.info(f"[Worker {worker_id}] OpenAlex補完後のPubMed PMID取得成功: {pmid}")
+
+            pubmed_metadata = await pubmed_service.fetch_metadata_from_pubmed(pmid)
+            if pubmed_metadata:
+                paper_metadata = await self._merge_metadata(paper_metadata, pubmed_metadata)
+                logger.info(f"[Worker {worker_id}] 再検索したPubMedメタデータで更新完了: {file_name}")
+            else:
+                logger.warning(f"[Worker {worker_id}] 再検索したPubMedメタデータ取得に失敗: {file_name}")
+
+            return paper_metadata, True
+
+        except Exception as e:
+            logger.warning(f"[Worker {worker_id}] OpenAlex補完後のPubMed再検索エラー（処理は続行）: {e}")
+            return paper_metadata, False
 
     async def _append_to_inbox(self, title: str, notion_page_id: str) -> bool:
         """Inbox.mdに論文登録記録を追記"""

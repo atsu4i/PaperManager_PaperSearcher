@@ -7,6 +7,7 @@ import asyncio
 import json
 import aiohttp
 import aiofiles
+import re
 from typing import Optional, Dict, Any, List
 from pathlib import Path
 from notion_client import Client
@@ -328,12 +329,15 @@ class NotionService:
             logger.error(f"Notionデータベース接続エラー: {e}")
             return False
     
-    async def search_existing_paper(self, title: str, doi: str = None) -> Optional[str]:
+    async def search_existing_paper(self, title: str, doi: str = None, pmid: str = None) -> Optional[str]:
         """既存の論文ページを検索（正確性を重視）"""
         try:
+            normalized_doi = self._normalize_doi(doi)
+            normalized_pmid = self._normalize_pmid(pmid)
+
             # DOIが利用可能な場合は優先的にDOIで検索（最も正確）
-            if doi:
-                doi_url = f"https://doi.org/{doi}" if not doi.startswith('http') else doi
+            if normalized_doi:
+                doi_url = f"https://doi.org/{normalized_doi}"
                 response = await self._async_notion_call(
                     self.client.databases.query,
                     database_id=self.database_id,
@@ -353,6 +357,28 @@ class NotionService:
                         return page_id
                     else:
                         logger.debug(f"DOIで見つかったページが存在しません: {page_id}")
+
+            # PMIDが利用可能な場合はPMIDでも検索
+            if normalized_pmid:
+                pubmed_url = f"https://pubmed.ncbi.nlm.nih.gov/{normalized_pmid}/"
+                response = await self._async_notion_call(
+                    self.client.databases.query,
+                    database_id=self.database_id,
+                    filter={
+                        "property": "PubMed",
+                        "url": {
+                            "equals": pubmed_url
+                        }
+                    }
+                )
+
+                if response.get('results'):
+                    page_id = response['results'][0]['id']
+                    if await self._verify_page_exists(page_id):
+                        logger.info(f"PMIDで既存ページを発見: {page_id}")
+                        return page_id
+                    else:
+                        logger.debug(f"PMIDで見つかったページが存在しません: {page_id}")
             
             # タイトルで検索（より厳密なマッチング）
             if title:
@@ -386,6 +412,28 @@ class NotionService:
                                 # タイトルの類似性をチェック
                                 result_title = self._extract_title_from_result(result)
                                 if self._titles_are_similar(clean_title, result_title):
+                                    if self._has_conflicting_identifiers(
+                                        result,
+                                        normalized_doi,
+                                        normalized_pmid
+                                    ):
+                                        logger.info(
+                                            f"タイトルは類似していますがDOI/PMIDが異なるため別論文として扱います: "
+                                            f"'{clean_title}' vs '{result_title}'"
+                                        )
+                                        continue
+
+                                    if (normalized_doi or normalized_pmid) and not self._has_matching_identifier(
+                                        result,
+                                        normalized_doi,
+                                        normalized_pmid
+                                    ):
+                                        logger.info(
+                                            f"タイトルは類似していますがDOI/PMID一致を確認できないため重複扱いしません: "
+                                            f"'{clean_title}' vs '{result_title}'"
+                                        )
+                                        continue
+
                                     logger.info(f"タイトルで既存ページを発見: {page_id}")
                                     return page_id
                                 else:
@@ -399,6 +447,61 @@ class NotionService:
         except Exception as e:
             logger.warning(f"既存ページ検索エラー: {e}")
             return None
+
+    def _normalize_doi(self, doi: Optional[str]) -> str:
+        """DOIを比較用に正規化"""
+        if not doi:
+            return ""
+
+        normalized = doi.strip()
+        normalized = re.sub(r'^https?://(dx\.)?doi\.org/', '', normalized, flags=re.IGNORECASE)
+        normalized = re.sub(r'^doi:\s*', '', normalized, flags=re.IGNORECASE)
+        return normalized.strip().rstrip('/').lower()
+
+    def _normalize_pmid(self, pmid: Optional[str]) -> str:
+        """PMIDまたはPubMed URLを比較用に正規化"""
+        if not pmid:
+            return ""
+
+        normalized = pmid.strip()
+        match = re.search(r'pubmed\.ncbi\.nlm\.nih\.gov/(\d+)', normalized)
+        if match:
+            return match.group(1)
+
+        match = re.search(r'/pubmed/(\d+)', normalized)
+        if match:
+            return match.group(1)
+
+        match = re.search(r'\d+', normalized)
+        return match.group(0) if match else ""
+
+    def _extract_url_property_from_result(self, result: dict, property_name: str) -> str:
+        """検索結果からURLプロパティを抽出"""
+        try:
+            prop = result.get('properties', {}).get(property_name, {})
+            return prop.get('url') or ""
+        except Exception:
+            return ""
+
+    def _has_matching_identifier(self, result: dict, doi: str, pmid: str) -> bool:
+        """既存ページとDOI/PMIDのどちらかが一致するか確認"""
+        result_doi = self._normalize_doi(self._extract_url_property_from_result(result, "DOI"))
+        result_pmid = self._normalize_pmid(self._extract_url_property_from_result(result, "PubMed"))
+
+        return bool(
+            (doi and result_doi and doi == result_doi) or
+            (pmid and result_pmid and pmid == result_pmid)
+        )
+
+    def _has_conflicting_identifiers(self, result: dict, doi: str, pmid: str) -> bool:
+        """既存ページとDOI/PMIDが明確に矛盾するか確認"""
+        result_doi = self._normalize_doi(self._extract_url_property_from_result(result, "DOI"))
+        result_pmid = self._normalize_pmid(self._extract_url_property_from_result(result, "PubMed"))
+
+        return bool(
+            (doi and result_doi and doi != result_doi) or
+            (pmid and result_pmid and pmid != result_pmid)
+        )
     
     def _clean_title_for_search(self, title: str) -> str:
         """検索用にタイトルをクリーンアップ"""
